@@ -341,7 +341,7 @@ class BioStarSDK:
     # ── Internal Helpers ──────────────────────────────────────────────────────
     @staticmethod
     def _check(ret: int, fn_name: str) -> None:
-        """Raise RuntimeError if the SDK did not return BS_SDK_SUCCESS."""
-        if ret != BS_SDK_SUCCESS:
+        """Raise RuntimeError if the SDK did not return BS_SDK_SUCCESS (0) or 1."""
+        if ret not in (0, 1):
             msg = _sdk_msg(ret)
             raise RuntimeError(f"[{fn_name}] failed — {msg}")
