@@ -90,21 +90,20 @@ def _login_screen():
     _, col, _ = st.columns([1, 2, 1])
     with col:
         st.markdown("<br>", unsafe_allow_html=True)
-        with st.form("login_form", clear_on_submit=False, border=False):
-            password = st.text_input(
-                "Admin Password",
-                type="password",
-                placeholder="Enter password …",
-                label_visibility="collapsed",
-            )
-            login_btn = st.form_submit_button("🔓  Sign In", use_container_width=True, type="primary")
+        password = st.text_input(
+            "Admin Password",
+            type="password",
+            placeholder="Enter password …",
+            label_visibility="collapsed",
+        )
+        login_btn = st.button("🔓  Sign In", use_container_width=True, type="primary")
 
-            if login_btn:
-                if password == _get_dashboard_password():
-                    st.session_state["authenticated"] = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password. Please try again.")
+        if login_btn or password:
+            if password == _get_dashboard_password():
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
 
 
 # ── Auth Check ─────────────────────────────────────────────────────────────────
