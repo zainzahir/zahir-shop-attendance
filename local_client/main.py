@@ -79,16 +79,28 @@ class EnrollmentTab(ctk.CTkFrame):
         self.pending_list = []
         self.selected_pending_id = None
         
+        dropdown_frame = ctk.CTkFrame(self, fg_color="transparent")
+        dropdown_frame.grid(row=1, column=0, columnspan=2, pady=(0, 15), padx=20)
+
         self.pending_var = ctk.StringVar(value="--- New Employee (Type below) ---")
         self.pending_dropdown = ctk.CTkOptionMenu(
-            self,
+            dropdown_frame,
             variable=self.pending_var,
             values=["--- New Employee (Type below) ---"],
             command=self._on_pending_select,
-            width=360,
+            width=300,
             font=ctk.CTkFont(size=14)
         )
-        self.pending_dropdown.grid(row=1, column=0, columnspan=2, pady=(0, 15), padx=20)
+        self.pending_dropdown.pack(side="left", padx=(0, 10))
+
+        self.refresh_btn = ctk.CTkButton(
+            dropdown_frame,
+            text="🔄",
+            width=40,
+            command=self._reload_pending_list,
+            font=ctk.CTkFont(size=16)
+        )
+        self.refresh_btn.pack(side="left")
 
         # ── Form fields ──
         fields = [
