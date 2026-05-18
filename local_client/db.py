@@ -55,6 +55,36 @@ def insert_employee(
     return emp_id
 
 
+def get_pending_employees() -> List[dict]:
+    """Fetch all employees who were added via web but lack a fingerprint."""
+    sql = """
+        SELECT id, name, cnic, phone, address
+        FROM employees
+        WHERE enrollment_status = 'pending_local_enrollment'
+        ORDER BY created_at DESC;
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    return rows
+
+
+def update_employee_fingerprint(employee_id: int, fingerprint_b64: str) -> None:
+    """Update an existing employee to add their fingerprint and mark as enrolled."""
+    sql = """
+        UPDATE employees
+        SET fingerprint_template = %s,
+            enrollment_status = 'enrolled'
+        WHERE id = %s;
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (fingerprint_b64, employee_id))
+        conn.commit()
+    logger.info(f"Updated employee_id={employee_id} with fingerprint.")
+
+
 def get_all_templates() -> List[Tuple[int, str]]:
     """
     Fetch (employee_id, fingerprint_template) for every enrolled employee.

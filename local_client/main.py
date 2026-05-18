@@ -75,6 +75,21 @@ class EnrollmentTab(ctk.CTkFrame):
             font=ctk.CTkFont(size=22, weight="bold"),
         ).grid(row=0, column=0, columnspan=2, pady=(20, 10), padx=20)
 
+        # ── Dropdown for Pending Enrollments ──
+        self.pending_list = []
+        self.selected_pending_id = None
+        
+        self.pending_var = ctk.StringVar(value="--- New Employee (Type below) ---")
+        self.pending_dropdown = ctk.CTkOptionMenu(
+            self,
+            variable=self.pending_var,
+            values=["--- New Employee (Type below) ---"],
+            command=self._on_pending_select,
+            width=360,
+            font=ctk.CTkFont(size=14)
+        )
+        self.pending_dropdown.grid(row=1, column=0, columnspan=2, pady=(0, 15), padx=20)
+
         # ── Form fields ──
         fields = [
             ("Full Name *",   "name"),
@@ -84,7 +99,7 @@ class EnrollmentTab(ctk.CTkFrame):
         ]
         self._entries: dict[str, ctk.CTkEntry] = {}
 
-        for i, (label, key) in enumerate(fields, start=1):
+        for i, (label, key) in enumerate(fields, start=2):
             ctk.CTkLabel(self, text=label, anchor="w").grid(
                 row=i, column=0, padx=(20, 8), pady=6, sticky="w"
             )
@@ -95,18 +110,18 @@ class EnrollmentTab(ctk.CTkFrame):
         self.columnconfigure(1, weight=1)
 
         # ── Status label ──
-        self.status_var = tk.StringVar(value="Fill the form, then click Enroll Finger.")
+        self.status_var = tk.StringVar(value="Select a pending user, or fill the form below.")
         self.status_lbl = ctk.CTkLabel(
             self, textvariable=self.status_var,
             font=ctk.CTkFont(size=13),
             text_color="gray",
             wraplength=420,
         )
-        self.status_lbl.grid(row=6, column=0, columnspan=2, pady=(10, 4), padx=20)
+        self.status_lbl.grid(row=7, column=0, columnspan=2, pady=(10, 4), padx=20)
 
         # ── Progress bar (hidden until scanning) ──
         self.progress = ctk.CTkProgressBar(self, mode="indeterminate", width=360)
-        self.progress.grid(row=7, column=0, columnspan=2, pady=4, padx=20)
+        self.progress.grid(row=8, column=0, columnspan=2, pady=4, padx=20)
         self.progress.grid_remove()
 
         # ── Enroll button ──
@@ -117,7 +132,47 @@ class EnrollmentTab(ctk.CTkFrame):
             height=44,
             command=self._start_enrollment,
         )
-        self.enroll_btn.grid(row=8, column=0, columnspan=2, pady=(12, 20), padx=20)
+        self.enroll_btn.grid(row=9, column=0, columnspan=2, pady=(12, 20), padx=20)
+        
+        self._reload_pending_list()
+
+    def _reload_pending_list(self):
+        try:
+            self.pending_list = db.get_pending_employees()
+        except Exception:
+            self.pending_list = []
+            
+        options = ["--- New Employee (Type below) ---"]
+        for p in self.pending_list:
+            options.append(f"ID {p['id']} - {p['name']}")
+        
+        self.pending_dropdown.configure(values=options)
+        self.pending_var.set(options[0])
+        self._on_pending_select(options[0])
+
+    def _on_pending_select(self, choice: str):
+        if choice.startswith("---"):
+            self.selected_pending_id = None
+            for e in self._entries.values():
+                e.configure(state="normal")
+                e.delete(0, "end")
+            return
+            
+        try:
+            id_str = choice.split("-")[0].replace("ID", "").strip()
+            self.selected_pending_id = int(id_str)
+            
+            for p in self.pending_list:
+                if p["id"] == self.selected_pending_id:
+                    for k in ["name", "cnic", "phone", "address"]:
+                        self._entries[k].configure(state="normal")
+                        self._entries[k].delete(0, "end")
+                        if p.get(k):
+                            self._entries[k].insert(0, p[k])
+                        self._entries[k].configure(state="disabled")
+                    break
+        except Exception:
+            pass
 
     # ── Enrollment flow ───────────────────────────────────────────────────────
     def _start_enrollment(self):
@@ -126,7 +181,7 @@ class EnrollmentTab(ctk.CTkFrame):
         phone   = self._entries["phone"].get().strip()
         address = self._entries["address"].get().strip()
 
-        if not name:
+        if not self.selected_pending_id and not name:
             messagebox.showwarning("Missing Field", "Full Name is required.")
             return
 
@@ -138,15 +193,21 @@ class EnrollmentTab(ctk.CTkFrame):
         # Run in background thread to keep UI responsive
         threading.Thread(
             target=self._enrollment_worker,
-            args=(name, cnic, phone, address),
+            args=(self.selected_pending_id, name, cnic, phone, address),
             daemon=True,
         ).start()
 
-    def _enrollment_worker(self, name, cnic, phone, address):
+    def _enrollment_worker(self, emp_id_selected, name, cnic, phone, address):
         try:
             device_id    = self.sdk.search_and_connect()
             template_b64 = self.sdk.enroll_finger(device_id)
-            emp_id       = db.insert_employee(name, cnic, phone, address, template_b64)
+            
+            if emp_id_selected:
+                db.update_employee_fingerprint(emp_id_selected, template_b64)
+                emp_id = emp_id_selected
+            else:
+                emp_id = db.insert_employee(name, cnic, phone, address, template_b64)
+                
             self.after(0, self._on_success, emp_id, name)
         except Exception as exc:
             logger.error(f"Enrollment error: {exc}")
@@ -160,8 +221,7 @@ class EnrollmentTab(ctk.CTkFrame):
         )
         audio.play_success()
         self.enroll_btn.configure(state="normal")
-        for e in self._entries.values():
-            e.delete(0, "end")
+        self._reload_pending_list()
 
     def _on_error(self, msg: str):
         self.progress.stop()
