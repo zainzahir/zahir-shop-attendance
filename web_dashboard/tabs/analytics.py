@@ -26,15 +26,20 @@ def render():
     rows = run_query("SELECT status, count FROM status_counts_today;")
     counts = {r["status"]: int(r["count"]) for r in rows} if rows else {}
 
+    total_all = run_query("SELECT COUNT(*) AS n FROM employees;")
+    total_all_count = int(total_all[0]["n"]) if total_all else 0
+
     total_enrolled = run_query(
         "SELECT COUNT(*) AS n FROM employees WHERE enrollment_status = 'enrolled';"
     )
-    total = int(total_enrolled[0]["n"]) if total_enrolled else 0
-    absent = total - sum(counts.get(s, 0) for s in ["Present", "Late", "Half Day"])
+    enrolled_count = int(total_enrolled[0]["n"]) if total_enrolled else 0
+    
+    # Absent count is based on enrolled_count (since pending users can't check in anyway)
+    absent = enrolled_count - sum(counts.get(s, 0) for s in ["Present", "Late", "Half Day"])
     counts.setdefault("Absent", absent)
 
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("👥 Total Enrolled", total)
+    col1.metric("👥 Total Employees", total_all_count, delta=f"{enrolled_count} With Fingerprint", delta_color="off")
     col2.metric("✅ Present",  counts.get("Present",  0))
     col3.metric("⏰ Late",     counts.get("Late",     0))
     col4.metric("🌓 Half Day", counts.get("Half Day", 0))
