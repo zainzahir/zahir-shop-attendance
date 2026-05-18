@@ -28,7 +28,6 @@ def _sanitize_url(url: str) -> str:
     clean_query = _up.urlencode({k: v[0] for k, v in clean.items()})
     return _up.urlunparse(parsed._replace(query=clean_query))
 
-logger = logging.getLogger(__name__)
 
 
 # ─── Connection ───────────────────────────────────────────────────────────────
@@ -100,6 +99,47 @@ def update_employee_fingerprint(employee_id: int, fingerprint_b64: str) -> None:
             cur.execute(sql, (fingerprint_b64, employee_id))
         conn.commit()
     logger.info(f"Updated employee_id={employee_id} with fingerprint.")
+
+
+def insert_employee_profile(
+    name: str,
+    cnic: str,
+    phone: str,
+    address: str,
+) -> int:
+    """
+    INSERT a new employee row WITHOUT a fingerprint.
+    Sets enrollment_status = 'pending_local_enrollment'.
+    Returns the new employee id.
+    """
+    sql = """
+        INSERT INTO employees (name, cnic, phone, address, enrollment_status)
+        VALUES (%s, %s, %s, %s, 'pending_local_enrollment')
+        RETURNING id;
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (name, cnic, phone, address))
+            emp_id = cur.fetchone()[0]
+        conn.commit()
+    logger.info(f"Registered profile id={emp_id}  name={name!r}  (pending fingerprint)")
+    return emp_id
+
+
+def get_verified_employees() -> List[dict]:
+    """Fetch all employees who have completed biometric enrollment."""
+    sql = """
+        SELECT id, name, cnic, phone, address
+        FROM employees
+        WHERE enrollment_status = 'enrolled'
+          AND fingerprint_template IS NOT NULL
+        ORDER BY id DESC;
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    return rows
 
 
 def get_all_templates() -> List[Tuple[int, str]]:

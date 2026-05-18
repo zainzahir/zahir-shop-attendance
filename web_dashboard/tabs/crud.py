@@ -3,10 +3,68 @@ tabs/crud.py — Employee CRUD Management Portal Tab
 Provides Create / Read / Update / Delete operations on the employees table.
 """
 
+import re
 import pandas as pd
 import streamlit as st
 
 from db import run_query
+
+
+# ─── Validation helpers (mirrors local_client/validators.py) ──────────────────
+def _validate_name(v: str) -> str | None:
+    v = v.strip()
+    if not v:
+        return "Full Name is required."
+    if not re.fullmatch(r"[A-Za-z\s]+", v):
+        return "Name must contain only letters and spaces."
+    return None
+
+def _validate_cnic(v: str) -> str | None:
+    v = v.strip()
+    if not v:
+        return "CNIC is required."
+    digits = re.sub(r"\D", "", v)
+    if len(digits) != 13:
+        return "CNIC must be exactly 13 digits."
+    return None
+
+def _format_cnic(v: str) -> str:
+    digits = re.sub(r"\D", "", v.strip())
+    if len(digits) >= 13:
+        return f"{digits[:5]}-{digits[5:12]}-{digits[12]}"
+    return v.strip()
+
+def _validate_phone(v: str) -> str | None:
+    v = v.strip()
+    if not v:
+        return "Phone number is required."
+    digits = re.sub(r"\D", "", v)
+    if len(digits) != 11:
+        return "Phone must be exactly 11 digits."
+    return None
+
+def _validate_address(v: str) -> str | None:
+    v = v.strip()
+    if not v:
+        return "Address is required."
+    if not re.fullmatch(r"[A-Za-z0-9\s,/\#.\-]+", v):
+        return "Address contains invalid characters."
+    return None
+
+
+def _run_all_validations(name, cnic, phone, address) -> list[str]:
+    """Return a list of error messages. Empty list = all valid."""
+    errors = []
+    for fn, val in [
+        (_validate_name,    name),
+        (_validate_cnic,    cnic),
+        (_validate_phone,   phone),
+        (_validate_address, address),
+    ]:
+        err = fn(val)
+        if err:
+            errors.append(err)
+    return errors
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -36,27 +94,31 @@ def render():
             "The record is created with status `pending_local_enrollment`."
         )
         with st.form("add_employee_form", clear_on_submit=True):
-            name    = st.text_input("Full Name *")
-            cnic    = st.text_input("CNIC  (XXXXX-XXXXXXX-X)")
-            phone   = st.text_input("Phone Number")
-            address = st.text_area("Address", height=80)
+            name    = st.text_input("Full Name *", help="Only letters and spaces")
+            cnic    = st.text_input("CNIC *", help="XXXXX-XXXXXXX-X  (13 digits)")
+            phone   = st.text_input("Phone Number *", help="11 digits, e.g. 03001234567")
+            address = st.text_area("Address *", height=80, help="Street, area, city")
             submitted = st.form_submit_button("💾 Save Employee")
 
         if submitted:
-            if not name.strip():
-                st.error("Full Name is required.")
+            errors = _run_all_validations(name, cnic, phone, address)
+            if errors:
+                for e in errors:
+                    st.error(e)
             else:
+                formatted_cnic = _format_cnic(cnic)
+                clean_phone = re.sub(r"\D", "", phone.strip())
                 run_query(
                     """
                     INSERT INTO employees (name, cnic, phone, address,
                                           enrollment_status)
                     VALUES (%s, %s, %s, %s, 'pending_local_enrollment');
                     """,
-                    (name.strip(), cnic.strip() or None,
-                     phone.strip() or None, address.strip() or None),
+                    (name.strip(), formatted_cnic,
+                     clean_phone, address.strip()),
                     fetch=False,
                 )
-                st.success(f"✅ Employee **{name}** added. Visit the shop PC to enroll their fingerprint.")
+                st.success(f"✅ Employee **{name.strip()}** added. Visit the shop PC to enroll their fingerprint.")
 
     # ── READ ──────────────────────────────────────────────────────────────────
     with op_tabs[1]:
@@ -99,15 +161,19 @@ def render():
 
             with st.form("edit_employee_form"):
                 new_name    = st.text_input("Full Name *",    value=emp_row["name"])
-                new_cnic    = st.text_input("CNIC",           value=emp_row["cnic"]  or "")
-                new_phone   = st.text_input("Phone",          value=emp_row["phone"] or "")
-                new_address = st.text_area("Address", height=80, value=emp_row["address"] or "")
+                new_cnic    = st.text_input("CNIC *",         value=emp_row["cnic"]  or "")
+                new_phone   = st.text_input("Phone *",        value=emp_row["phone"] or "")
+                new_address = st.text_area("Address *", height=80, value=emp_row["address"] or "")
                 save_btn    = st.form_submit_button("💾 Update Record")
 
             if save_btn:
-                if not new_name.strip():
-                    st.error("Full Name cannot be empty.")
+                errors = _run_all_validations(new_name, new_cnic, new_phone, new_address)
+                if errors:
+                    for e in errors:
+                        st.error(e)
                 else:
+                    formatted_cnic = _format_cnic(new_cnic)
+                    clean_phone = re.sub(r"\D", "", new_phone.strip())
                     run_query(
                         """
                         UPDATE employees
@@ -117,10 +183,8 @@ def render():
                                address = %s
                         WHERE  id = %s;
                         """,
-                        (new_name.strip(),
-                         new_cnic.strip()    or None,
-                         new_phone.strip()   or None,
-                         new_address.strip() or None,
+                        (new_name.strip(), formatted_cnic,
+                         clean_phone, new_address.strip(),
                          emp_id),
                         fetch=False,
                     )

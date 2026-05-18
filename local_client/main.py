@@ -27,6 +27,7 @@ from config import (
     PRESENT_MAX_MINUTES, LATE_MAX_MINUTES, HALF_DAY_MAX_MINUTES,
 )
 from scanner import BioStarSDK
+from validators import validate_name, validate_cnic, validate_phone, validate_address
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -59,195 +60,348 @@ def compute_status(check_in: datetime.time) -> str:
         return "Half Day"
 
 
-# ─── Enrollment Tab ───────────────────────────────────────────────────────────
-class EnrollmentTab(ctk.CTkFrame):
-    """Form to capture personal details + scan + upload to Supabase."""
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ENROLLMENT TAB — Registration Form + Pending Section + Verified Section
+# ═══════════════════════════════════════════════════════════════════════════════
+class EnrollmentTab(ctk.CTkScrollableFrame):
+    """Three-section enrollment UI with validation."""
 
     def __init__(self, master, sdk: BioStarSDK, **kwargs):
         super().__init__(master, **kwargs)
         self.sdk = sdk
+        self.columnconfigure(0, weight=1)
         self._build_ui()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  BUILD UI
+    # ══════════════════════════════════════════════════════════════════════════
     def _build_ui(self):
-        # ── Header ──
+        row = 0
+
+        # ── Section 1: Registration Form ─────────────────────────────────────
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=row, column=0, sticky="ew", padx=10, pady=(10, 0))
         ctk.CTkLabel(
-            self, text="Employee Enrollment",
-            font=ctk.CTkFont(size=22, weight="bold"),
-        ).grid(row=0, column=0, columnspan=2, pady=(20, 10), padx=20)
+            header_frame, text="📝  Register New Employee",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            header_frame,
+            text="All fields are required. Fingerprint will be enrolled separately below.",
+            font=ctk.CTkFont(size=12), text_color="gray",
+        ).pack(anchor="w")
+        row += 1
 
-        # ── Dropdown for Pending Enrollments ──
-        self.pending_list = []
-        self.selected_pending_id = None
-        
-        dropdown_frame = ctk.CTkFrame(self, fg_color="transparent")
-        dropdown_frame.grid(row=1, column=0, columnspan=2, pady=(0, 15), padx=20)
+        form_frame = ctk.CTkFrame(self, corner_radius=10)
+        form_frame.grid(row=row, column=0, sticky="ew", padx=10, pady=(8, 4))
+        form_frame.columnconfigure(1, weight=1)
 
-        self.pending_var = ctk.StringVar(value="--- New Employee (Type below) ---")
-        self.pending_dropdown = ctk.CTkOptionMenu(
-            dropdown_frame,
-            variable=self.pending_var,
-            values=["--- New Employee (Type below) ---"],
-            command=self._on_pending_select,
-            width=300,
-            font=ctk.CTkFont(size=14)
-        )
-        self.pending_dropdown.pack(side="left", padx=(0, 10))
-
-        self.refresh_btn = ctk.CTkButton(
-            dropdown_frame,
-            text="🔄",
-            width=40,
-            command=self._reload_pending_list,
-            font=ctk.CTkFont(size=16)
-        )
-        self.refresh_btn.pack(side="left")
-
-        # ── Form fields ──
         fields = [
-            ("Full Name *",   "name"),
-            ("CNIC",          "cnic"),
-            ("Phone Number",  "phone"),
-            ("Address",       "address"),
+            ("Full Name *",    "name",    "Only letters and spaces"),
+            ("CNIC *",         "cnic",    "XXXXX-XXXXXXX-X  (13 digits)"),
+            ("Phone *",        "phone",   "11 digits, e.g. 03001234567"),
+            ("Address *",      "address", "Street, area, city"),
         ]
         self._entries: dict[str, ctk.CTkEntry] = {}
+        self._error_labels: dict[str, ctk.CTkLabel] = {}
+        self._default_border = "#565B5E"   # default CTk border colour
 
-        for i, (label, key) in enumerate(fields, start=2):
-            ctk.CTkLabel(self, text=label, anchor="w").grid(
-                row=i, column=0, padx=(20, 8), pady=6, sticky="w"
+        for i, (label, key, placeholder) in enumerate(fields):
+            ctk.CTkLabel(form_frame, text=label, anchor="w",
+                         font=ctk.CTkFont(size=13)).grid(
+                row=i * 2, column=0, padx=(12, 6), pady=(8, 0), sticky="w"
             )
-            entry = ctk.CTkEntry(self, width=300, placeholder_text=label)
-            entry.grid(row=i, column=1, padx=(0, 20), pady=6, sticky="ew")
+            entry = ctk.CTkEntry(
+                form_frame, width=300,
+                placeholder_text=placeholder,
+                font=ctk.CTkFont(size=13),
+            )
+            entry.grid(row=i * 2, column=1, padx=(0, 12), pady=(8, 0), sticky="ew")
             self._entries[key] = entry
 
-        self.columnconfigure(1, weight=1)
+            err_lbl = ctk.CTkLabel(
+                form_frame, text="", text_color="#F44336",
+                font=ctk.CTkFont(size=11), anchor="w",
+            )
+            err_lbl.grid(row=i * 2 + 1, column=1, padx=(0, 12), sticky="w")
+            self._error_labels[key] = err_lbl
 
-        # ── Status label ──
-        self.status_var = tk.StringVar(value="Select a pending user, or fill the form below.")
+        row += 1
+
+        # Save Profile button
+        self.save_btn = ctk.CTkButton(
+            self, text="💾  Save Profile",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=40,
+            command=self._save_profile,
+        )
+        self.save_btn.grid(row=row, column=0, pady=(8, 12), padx=10)
+        row += 1
+
+        # ── Separator ────────────────────────────────────────────────────────
+        ctk.CTkFrame(self, height=2, fg_color="#444").grid(
+            row=row, column=0, sticky="ew", padx=10, pady=4
+        )
+        row += 1
+
+        # ── Section 2: Pending Verification ──────────────────────────────────
+        pending_header = ctk.CTkFrame(self, fg_color="transparent")
+        pending_header.grid(row=row, column=0, sticky="ew", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            pending_header, text="⏳  Pending Biometric Verification",
+            font=ctk.CTkFont(size=18, weight="bold"), text_color="#FFA500",
+        ).pack(side="left")
+        ctk.CTkButton(
+            pending_header, text="🔄", width=36, height=30,
+            command=self._reload_lists,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="right", padx=4)
+        row += 1
+
+        self.pending_container = ctk.CTkFrame(self, corner_radius=8)
+        self.pending_container.grid(row=row, column=0, sticky="ew", padx=10, pady=(4, 8))
+        self.pending_container.columnconfigure(0, weight=1)
+        row += 1
+
+        # ── Separator ────────────────────────────────────────────────────────
+        ctk.CTkFrame(self, height=2, fg_color="#444").grid(
+            row=row, column=0, sticky="ew", padx=10, pady=4
+        )
+        row += 1
+
+        # ── Section 3: Verified Employees ────────────────────────────────────
+        verified_header = ctk.CTkFrame(self, fg_color="transparent")
+        verified_header.grid(row=row, column=0, sticky="ew", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            verified_header, text="✅  Verified Employees",
+            font=ctk.CTkFont(size=18, weight="bold"), text_color="#4CAF50",
+        ).pack(side="left")
+        row += 1
+
+        self.verified_container = ctk.CTkFrame(self, corner_radius=8)
+        self.verified_container.grid(row=row, column=0, sticky="ew", padx=10, pady=(4, 12))
+        self.verified_container.columnconfigure(0, weight=1)
+        row += 1
+
+        # ── Status / progress for enrollment ─────────────────────────────────
+        self.status_var = tk.StringVar(value="")
         self.status_lbl = ctk.CTkLabel(
             self, textvariable=self.status_var,
-            font=ctk.CTkFont(size=13),
-            text_color="gray",
-            wraplength=420,
+            font=ctk.CTkFont(size=13), text_color="gray", wraplength=500,
         )
-        self.status_lbl.grid(row=7, column=0, columnspan=2, pady=(10, 4), padx=20)
+        self.status_lbl.grid(row=row, column=0, pady=(0, 4), padx=10)
+        row += 1
 
-        # ── Progress bar (hidden until scanning) ──
         self.progress = ctk.CTkProgressBar(self, mode="indeterminate", width=360)
-        self.progress.grid(row=8, column=0, columnspan=2, pady=4, padx=20)
+        self.progress.grid(row=row, column=0, pady=(0, 8), padx=10)
         self.progress.grid_remove()
 
-        # ── Enroll button ──
-        self.enroll_btn = ctk.CTkButton(
-            self,
-            text="🖐  Enroll Finger",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            height=44,
-            command=self._start_enrollment,
-        )
-        self.enroll_btn.grid(row=9, column=0, columnspan=2, pady=(12, 20), padx=20)
-        
-        self._reload_pending_list()
+        # Initial data load
+        self._reload_lists()
 
-    def _reload_pending_list(self):
+    # ══════════════════════════════════════════════════════════════════════════
+    #  VALIDATION + SAVE PROFILE
+    # ══════════════════════════════════════════════════════════════════════════
+    def _clear_errors(self):
+        for key in self._error_labels:
+            self._error_labels[key].configure(text="")
+            self._entries[key].configure(border_color=self._default_border)
+
+    def _show_error(self, key: str, msg: str):
+        self._error_labels[key].configure(text=msg)
+        self._entries[key].configure(border_color="#F44336")
+
+    def _save_profile(self):
+        self._clear_errors()
+        all_valid = True
+
+        ok, result = validate_name(self._entries["name"].get())
+        if not ok:
+            self._show_error("name", result); all_valid = False
+        else:
+            name = result
+
+        ok, result = validate_cnic(self._entries["cnic"].get())
+        if not ok:
+            self._show_error("cnic", result); all_valid = False
+        else:
+            cnic = result
+
+        ok, result = validate_phone(self._entries["phone"].get())
+        if not ok:
+            self._show_error("phone", result); all_valid = False
+        else:
+            phone = result
+
+        ok, result = validate_address(self._entries["address"].get())
+        if not ok:
+            self._show_error("address", result); all_valid = False
+        else:
+            address = result
+
+        if not all_valid:
+            return
+
+        # All valid → save to DB
         try:
-            self.pending_list = db.get_pending_employees()
-        except Exception:
-            self.pending_list = []
-            
-        options = ["--- New Employee (Type below) ---"]
-        for p in self.pending_list:
-            options.append(f"ID {p['id']} - {p['name']}")
-        
-        self.pending_dropdown.configure(values=options)
-        self.pending_var.set(options[0])
-        self._on_pending_select(options[0])
-
-    def _on_pending_select(self, choice: str):
-        if choice.startswith("---"):
-            self.selected_pending_id = None
+            emp_id = db.insert_employee_profile(name, cnic, phone, address)
+            messagebox.showinfo(
+                "Profile Saved",
+                f"✅ {name} registered (ID #{emp_id}).\n"
+                "Now enroll their fingerprint from the list below."
+            )
             for e in self._entries.values():
-                e.configure(state="normal")
                 e.delete(0, "end")
-            return
-            
+            self._reload_lists()
+        except Exception as exc:
+            logger.error(f"Save profile error: {exc}")
+            messagebox.showerror("Database Error", str(exc))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  EMPLOYEE LIST RENDERING
+    # ══════════════════════════════════════════════════════════════════════════
+    def _reload_lists(self):
+        self._render_pending_list()
+        self._render_verified_list()
+
+    def _render_pending_list(self):
+        # Clear existing widgets
+        for w in self.pending_container.winfo_children():
+            w.destroy()
+
         try:
-            id_str = choice.split("-")[0].replace("ID", "").strip()
-            self.selected_pending_id = int(id_str)
-            
-            for p in self.pending_list:
-                if p["id"] == self.selected_pending_id:
-                    for k in ["name", "cnic", "phone", "address"]:
-                        self._entries[k].configure(state="normal")
-                        self._entries[k].delete(0, "end")
-                        if p.get(k):
-                            self._entries[k].insert(0, p[k])
-                        self._entries[k].configure(state="disabled")
-                    break
+            pending = db.get_pending_employees()
         except Exception:
-            pass
+            pending = []
 
-    # ── Enrollment flow ───────────────────────────────────────────────────────
-    def _start_enrollment(self):
-        name    = self._entries["name"].get().strip()
-        cnic    = self._entries["cnic"].get().strip()
-        phone   = self._entries["phone"].get().strip()
-        address = self._entries["address"].get().strip()
-
-        if not self.selected_pending_id and not name:
-            messagebox.showwarning("Missing Field", "Full Name is required.")
+        if not pending:
+            ctk.CTkLabel(
+                self.pending_container,
+                text="  No pending employees. Register someone above!",
+                font=ctk.CTkFont(size=13), text_color="gray",
+            ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
             return
 
-        self.enroll_btn.configure(state="disabled")
-        self._set_status("Place thumb on scanner …", color="#FFA500")
+        for i, emp in enumerate(pending):
+            row_frame = ctk.CTkFrame(
+                self.pending_container,
+                fg_color="#2B2B2B" if i % 2 == 0 else "#333333",
+                corner_radius=6,
+            )
+            row_frame.grid(row=i, column=0, sticky="ew", padx=6, pady=2)
+            row_frame.columnconfigure(0, weight=1)
+
+            info = f"{emp['name']}"
+            if emp.get("cnic"):
+                info += f"  •  {emp['cnic']}"
+            if emp.get("phone"):
+                info += f"  •  {emp['phone']}"
+
+            ctk.CTkLabel(
+                row_frame, text=info, anchor="w",
+                font=ctk.CTkFont(size=13),
+            ).grid(row=0, column=0, padx=10, pady=8, sticky="w")
+
+            ctk.CTkButton(
+                row_frame, text="🖐 Enroll Biometrics",
+                width=160, height=32,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#E65100", hover_color="#BF360C",
+                command=lambda e=emp: self._start_biometric_enrollment(e),
+            ).grid(row=0, column=1, padx=10, pady=8)
+
+    def _render_verified_list(self):
+        for w in self.verified_container.winfo_children():
+            w.destroy()
+
+        try:
+            verified = db.get_verified_employees()
+        except Exception:
+            verified = []
+
+        if not verified:
+            ctk.CTkLabel(
+                self.verified_container,
+                text="  No verified employees yet.",
+                font=ctk.CTkFont(size=13), text_color="gray",
+            ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
+            return
+
+        for i, emp in enumerate(verified):
+            row_frame = ctk.CTkFrame(
+                self.verified_container,
+                fg_color="#1B3A1B" if i % 2 == 0 else "#1E421E",
+                corner_radius=6,
+            )
+            row_frame.grid(row=i, column=0, sticky="ew", padx=6, pady=2)
+            row_frame.columnconfigure(0, weight=1)
+
+            info = f"{emp['name']}"
+            if emp.get("cnic"):
+                info += f"  •  {emp['cnic']}"
+            if emp.get("phone"):
+                info += f"  •  {emp['phone']}"
+
+            ctk.CTkLabel(
+                row_frame, text=info, anchor="w",
+                font=ctk.CTkFont(size=13),
+            ).grid(row=0, column=0, padx=10, pady=8, sticky="w")
+
+            ctk.CTkLabel(
+                row_frame, text="✅ Verified",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#4CAF50",
+            ).grid(row=0, column=1, padx=10, pady=8)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  BIOMETRIC ENROLLMENT FLOW
+    # ══════════════════════════════════════════════════════════════════════════
+    def _start_biometric_enrollment(self, emp: dict):
+        self._set_status(
+            f"Place {emp['name']}'s thumb on scanner …", color="#FFA500"
+        )
         self.progress.grid()
         self.progress.start()
 
-        # Run in background thread to keep UI responsive
         threading.Thread(
-            target=self._enrollment_worker,
-            args=(self.selected_pending_id, name, cnic, phone, address),
+            target=self._biometric_worker,
+            args=(emp["id"], emp["name"]),
             daemon=True,
         ).start()
 
-    def _enrollment_worker(self, emp_id_selected, name, cnic, phone, address):
+    def _biometric_worker(self, emp_id: int, name: str):
         try:
             device_id    = self.sdk.search_and_connect()
             template_b64 = self.sdk.enroll_finger(device_id)
-            
-            if emp_id_selected:
-                db.update_employee_fingerprint(emp_id_selected, template_b64)
-                emp_id = emp_id_selected
-            else:
-                emp_id = db.insert_employee(name, cnic, phone, address, template_b64)
-                
-            self.after(0, self._on_success, emp_id, name)
+            db.update_employee_fingerprint(emp_id, template_b64)
+            self.after(0, self._on_enroll_success, emp_id, name)
         except Exception as exc:
-            logger.error(f"Enrollment error: {exc}")
-            self.after(0, self._on_error, str(exc))
+            logger.error(f"Biometric enrollment error: {exc}")
+            self.after(0, self._on_enroll_error, str(exc))
 
-    def _on_success(self, emp_id: int, name: str):
+    def _on_enroll_success(self, emp_id: int, name: str):
         self.progress.stop()
         self.progress.grid_remove()
         self._set_status(
-            f"✅  {name} enrolled successfully!  (ID #{emp_id})", color="#4CAF50"
+            f"✅  {name} biometrics enrolled!  (ID #{emp_id})", color="#4CAF50"
         )
         audio.play_success()
-        self.enroll_btn.configure(state="normal")
-        self._reload_pending_list()
+        self._reload_lists()
 
-    def _on_error(self, msg: str):
+    def _on_enroll_error(self, msg: str):
         self.progress.stop()
         self.progress.grid_remove()
         self._set_status(f"❌  {msg}", color="#F44336")
         audio.play_failure()
-        self.enroll_btn.configure(state="normal")
 
     def _set_status(self, text: str, color: str = "gray"):
         self.status_var.set(text)
         self.status_lbl.configure(text_color=color)
 
 
-# ─── Attendance Tab ───────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ATTENDANCE TAB
+# ═══════════════════════════════════════════════════════════════════════════════
 STATUS_COLORS = {
     "Present":  "#4CAF50",
     "Late":     "#FFA500",
@@ -411,12 +565,14 @@ class AttendanceTab(ctk.CTkFrame):
         self.log_box.configure(state="disabled")
 
 
-# ─── Main Application ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN APPLICATION
+# ═══════════════════════════════════════════════════════════════════════════════
 class AttendanceApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("640x620")
+        self.geometry("700x750")
         self.resizable(True, True)
 
         self.sdk = BioStarSDK()
