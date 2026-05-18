@@ -32,7 +32,7 @@ HOW ctypes PASSES VARIABLES TO A C DLL — QUICK REFERENCE
 5. DOUBLE POINTER ARRAYS  (uint32_t**)
    Use ctypes.POINTER(ctypes.c_uint32)() and pass with byref().
    Iterate with array[i] syntax up to the returned count.
-   Always call BS2_ReleaseMem() afterwards to avoid SDK memory leaks.
+   Always call BS2_ReleaseObject() afterwards to avoid SDK memory leaks.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -209,8 +209,8 @@ class BioStarSDK:
         lib.BS2_VerifyFingerprint.restype = i32
 
         # Memory release for SDK-allocated buffers
-        lib.BS2_ReleaseMem.argtypes = [vp]
-        lib.BS2_ReleaseMem.restype  = None
+        lib.BS2_ReleaseObject.argtypes = [vp]
+        lib.BS2_ReleaseObject.restype  = None
 
     # ── Device Management ─────────────────────────────────────────────────────
     def search_and_connect(self) -> int:
@@ -243,7 +243,7 @@ class BioStarSDK:
         logger.info(f"Found {count} device(s). Connecting to device ID={first_id}.")
 
         # Release SDK-allocated device list memory
-        self._lib.BS2_ReleaseMem(device_ids)
+        self._lib.BS2_ReleaseObject(device_ids)
 
         ret = self._lib.BS2_ConnectDevice(self._ctx, first_id)
         self._check(ret, "BS2_ConnectDevice")
