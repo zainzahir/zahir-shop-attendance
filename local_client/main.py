@@ -103,21 +103,26 @@ class EnrollmentTab(ctk.CTkScrollableFrame):
             ("Address *",      "address", "Street, area, city"),
         ]
         self._entries: dict[str, ctk.CTkEntry] = {}
+        self._string_vars: dict[str, tk.StringVar] = {}
         self._error_labels: dict[str, ctk.CTkLabel] = {}
         self._default_border = "#565B5E"   # default CTk border colour
+        self._suppress_trace = False       # prevents recursive trace calls
 
         for i, (label, key, placeholder) in enumerate(fields):
             ctk.CTkLabel(form_frame, text=label, anchor="w",
                          font=ctk.CTkFont(size=13)).grid(
                 row=i * 2, column=0, padx=(12, 6), pady=(8, 0), sticky="w"
             )
+            sv = tk.StringVar()
             entry = ctk.CTkEntry(
                 form_frame, width=300,
                 placeholder_text=placeholder,
                 font=ctk.CTkFont(size=13),
+                textvariable=sv,
             )
             entry.grid(row=i * 2, column=1, padx=(0, 12), pady=(8, 0), sticky="ew")
             self._entries[key] = entry
+            self._string_vars[key] = sv
 
             err_lbl = ctk.CTkLabel(
                 form_frame, text="", text_color="#F44336",
@@ -125,6 +130,11 @@ class EnrollmentTab(ctk.CTkScrollableFrame):
             )
             err_lbl.grid(row=i * 2 + 1, column=1, padx=(0, 12), sticky="w")
             self._error_labels[key] = err_lbl
+
+        # ── Real-time input filters ──
+        self._string_vars["name"].trace_add("write", self._filter_name)
+        self._string_vars["cnic"].trace_add("write", self._filter_cnic)
+        self._string_vars["phone"].trace_add("write", self._filter_phone)
 
         row += 1
 
@@ -210,6 +220,54 @@ class EnrollmentTab(ctk.CTkScrollableFrame):
     def _show_error(self, key: str, msg: str):
         self._error_labels[key].configure(text=msg)
         self._entries[key].configure(border_color="#F44336")
+
+    # ── Real-time input filters ───────────────────────────────────────────────
+    def _filter_name(self, *_args):
+        """Block any non-letter / non-space characters as the user types."""
+        if self._suppress_trace:
+            return
+        sv = self._string_vars["name"]
+        current = sv.get()
+        import re
+        filtered = re.sub(r"[^A-Za-z\s]", "", current)
+        if filtered != current:
+            self._suppress_trace = True
+            sv.set(filtered)
+            self._suppress_trace = False
+
+    def _filter_cnic(self, *_args):
+        """Only digits allowed; auto-insert hyphens at positions 5 and 12."""
+        if self._suppress_trace:
+            return
+        sv = self._string_vars["cnic"]
+        current = sv.get()
+        import re
+        digits = re.sub(r"\D", "", current)[:13]  # max 13 digits
+        # Build formatted string with hyphens
+        formatted = ""
+        for i, d in enumerate(digits):
+            if i == 5 or i == 12:
+                formatted += "-"
+            formatted += d
+        if formatted != current:
+            self._suppress_trace = True
+            sv.set(formatted)
+            # Move cursor to end
+            self._entries["cnic"].icursor(len(formatted))
+            self._suppress_trace = False
+
+    def _filter_phone(self, *_args):
+        """Only digits allowed, max 11."""
+        if self._suppress_trace:
+            return
+        sv = self._string_vars["phone"]
+        current = sv.get()
+        import re
+        filtered = re.sub(r"\D", "", current)[:11]  # max 11 digits
+        if filtered != current:
+            self._suppress_trace = True
+            sv.set(filtered)
+            self._suppress_trace = False
 
     def _save_profile(self):
         self._clear_errors()
