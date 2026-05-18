@@ -67,6 +67,34 @@ def _run_all_validations(name, cnic, phone, address) -> list[str]:
     return errors
 
 
+# ─── Live auto-format callbacks ───────────────────────────────────────────────
+def _on_name_change(key: str):
+    """Strip non-letter / non-space characters from name field."""
+    v = st.session_state.get(key, "")
+    filtered = re.sub(r"[^A-Za-z\s]", "", v)
+    if filtered != v:
+        st.session_state[key] = filtered
+
+def _on_cnic_change(key: str):
+    """Strip non-digits and auto-insert hyphens: XXXXX-XXXXXXX-X."""
+    v = st.session_state.get(key, "")
+    digits = re.sub(r"\D", "", v)[:13]
+    formatted = ""
+    for i, d in enumerate(digits):
+        if i == 5 or i == 12:
+            formatted += "-"
+        formatted += d
+    if formatted != v:
+        st.session_state[key] = formatted
+
+def _on_phone_change(key: str):
+    """Strip non-digits, max 11."""
+    v = st.session_state.get(key, "")
+    filtered = re.sub(r"\D", "", v)[:11]
+    if filtered != v:
+        st.session_state[key] = filtered
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def _reload_employees(search: str = "") -> pd.DataFrame:
     sql = """
@@ -93,14 +121,33 @@ def render():
             "Fingerprint will be enrolled later via the **local desktop client**. "
             "The record is created with status `pending_local_enrollment`."
         )
-        with st.form("add_employee_form", clear_on_submit=True):
-            name    = st.text_input("Full Name *", help="Only letters and spaces")
-            cnic    = st.text_input("CNIC *", help="XXXXX-XXXXXXX-X  (13 digits)")
-            phone   = st.text_input("Phone Number *", help="11 digits, e.g. 03001234567")
-            address = st.text_area("Address *", height=80, help="Street, area, city")
-            submitted = st.form_submit_button("💾 Save Employee")
 
-        if submitted:
+        # Initialize session state for Add form
+        for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
+            if k not in st.session_state:
+                st.session_state[k] = ""
+
+        name = st.text_input(
+            "Full Name *", key="add_name",
+            help="Only letters and spaces",
+            on_change=_on_name_change, args=("add_name",),
+        )
+        cnic = st.text_input(
+            "CNIC *", key="add_cnic",
+            help="XXXXX-XXXXXXX-X  (13 digits)",
+            on_change=_on_cnic_change, args=("add_cnic",),
+        )
+        phone = st.text_input(
+            "Phone Number *", key="add_phone",
+            help="11 digits, e.g. 03001234567",
+            on_change=_on_phone_change, args=("add_phone",),
+        )
+        address = st.text_area(
+            "Address *", key="add_address",
+            height=80, help="Street, area, city",
+        )
+
+        if st.button("💾 Save Employee", type="primary", key="add_btn"):
             errors = _run_all_validations(name, cnic, phone, address)
             if errors:
                 for e in errors:
@@ -119,6 +166,10 @@ def render():
                     fetch=False,
                 )
                 st.success(f"✅ Employee **{name.strip()}** added. Visit the shop PC to enroll their fingerprint.")
+                # Clear form after success
+                for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
+                    st.session_state[k] = ""
+                st.rerun()
 
     # ── READ ──────────────────────────────────────────────────────────────────
     with op_tabs[1]:
@@ -159,14 +210,32 @@ def render():
 
             emp_row = df_all[df_all["id"] == emp_id].iloc[0]
 
-            with st.form("edit_employee_form"):
-                new_name    = st.text_input("Full Name *",    value=emp_row["name"])
-                new_cnic    = st.text_input("CNIC *",         value=emp_row["cnic"]  or "")
-                new_phone   = st.text_input("Phone *",        value=emp_row["phone"] or "")
-                new_address = st.text_area("Address *", height=80, value=emp_row["address"] or "")
-                save_btn    = st.form_submit_button("💾 Update Record")
+            # Initialize edit form state when employee changes
+            edit_key = f"edit_emp_{emp_id}"
+            if st.session_state.get("_edit_loaded") != edit_key:
+                st.session_state["edit_name"]    = emp_row["name"] or ""
+                st.session_state["edit_cnic"]    = emp_row["cnic"] or ""
+                st.session_state["edit_phone"]   = emp_row["phone"] or ""
+                st.session_state["edit_address"] = emp_row["address"] or ""
+                st.session_state["_edit_loaded"] = edit_key
 
-            if save_btn:
+            new_name = st.text_input(
+                "Full Name *", key="edit_name",
+                on_change=_on_name_change, args=("edit_name",),
+            )
+            new_cnic = st.text_input(
+                "CNIC *", key="edit_cnic",
+                on_change=_on_cnic_change, args=("edit_cnic",),
+            )
+            new_phone = st.text_input(
+                "Phone *", key="edit_phone",
+                on_change=_on_phone_change, args=("edit_phone",),
+            )
+            new_address = st.text_area(
+                "Address *", key="edit_address", height=80,
+            )
+
+            if st.button("💾 Update Record", type="primary", key="edit_btn"):
                 errors = _run_all_validations(new_name, new_cnic, new_phone, new_address)
                 if errors:
                     for e in errors:
@@ -189,6 +258,8 @@ def render():
                         fetch=False,
                     )
                     st.success(f"✅ Employee #{emp_id} updated successfully.")
+                    st.session_state["_edit_loaded"] = None  # force reload
+                    st.rerun()
 
     # ── DELETE ────────────────────────────────────────────────────────────────
     with op_tabs[3]:
