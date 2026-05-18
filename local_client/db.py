@@ -9,8 +9,24 @@ from typing import Optional, List, Tuple
 
 import psycopg2
 import psycopg2.extras
+import urllib.parse as _up
 
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_PARAMS = {
+    "sslmode", "sslcert", "sslkey", "sslrootcert",
+    "connect_timeout", "application_name", "options",
+}
+
+def _sanitize_url(url: str) -> str:
+    """Strip any query parameters not supported by psycopg2/libpq."""
+    parsed      = _up.urlparse(url)
+    params      = _up.parse_qs(parsed.query)
+    clean       = {k: v for k, v in params.items() if k in _ALLOWED_PARAMS}
+    clean_query = _up.urlencode({k: v[0] for k, v in clean.items()})
+    return _up.urlunparse(parsed._replace(query=clean_query))
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +39,8 @@ def get_connection():
             "DATABASE_URL is not set. "
             "Add it to local_client/.env  →  DATABASE_URL=postgresql://..."
         )
-    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    clean_url = _sanitize_url(DATABASE_URL)
+    conn = psycopg2.connect(clean_url, sslmode="require")
     conn.autocommit = False
     return conn
 
