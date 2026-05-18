@@ -119,8 +119,9 @@ class BioStarSDK:
         logger.info("BS_SDK_V2.dll loaded successfully.")
         self._bind_functions()
 
-        ret = self._lib.BS2_AllocateContext(ctypes.byref(self._ctx))
-        self._check(ret, "BS2_AllocateContext")
+        self._ctx = self._lib.BS2_AllocateContext()
+        if not self._ctx:
+            raise RuntimeError("BS2_AllocateContext failed (returned NULL).")
 
         ret = self._lib.BS2_Initialize(self._ctx)
         self._check(ret, "BS2_Initialize")
@@ -161,8 +162,8 @@ class BioStarSDK:
         i32 = ctypes.c_int
 
         # Context management
-        lib.BS2_AllocateContext.argtypes = [ctypes.POINTER(vp)]
-        lib.BS2_AllocateContext.restype  = i32
+        lib.BS2_AllocateContext.argtypes = []
+        lib.BS2_AllocateContext.restype  = vp
 
         lib.BS2_Initialize.argtypes = [vp]
         lib.BS2_Initialize.restype  = i32
