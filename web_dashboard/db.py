@@ -8,11 +8,27 @@ Secret resolution order (12-factor pattern):
 
 import os
 import logging
+import urllib.parse as _up
 import psycopg2
 import psycopg2.extras
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+
+# psycopg2 only accepts standard libpq parameters.
+# Supabase pooler URLs append ?pgbouncer=true which causes a ProgrammingError.
+_ALLOWED_PARAMS = {
+    "sslmode", "sslcert", "sslkey", "sslrootcert",
+    "connect_timeout", "application_name", "options",
+}
+
+def _sanitize_url(url: str) -> str:
+    """Strip any query parameters not supported by psycopg2/libpq."""
+    parsed      = _up.urlparse(url)
+    params      = _up.parse_qs(parsed.query)
+    clean       = {k: v for k, v in params.items() if k in _ALLOWED_PARAMS}
+    clean_query = _up.urlencode({k: v[0] for k, v in clean.items()})
+    return _up.urlunparse(parsed._replace(query=clean_query))
 
 
 @st.cache_resource(show_spinner=False)
@@ -36,7 +52,8 @@ def get_connection():
         )
         st.stop()
 
-    conn = psycopg2.connect(url, sslmode="require")
+    clean_url = _sanitize_url(url)
+    conn = psycopg2.connect(clean_url)
     conn.autocommit = True          # dashboard is mostly read; safer for concurrent use
     return conn
 
