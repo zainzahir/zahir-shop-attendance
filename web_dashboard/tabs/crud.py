@@ -122,6 +122,12 @@ def render():
             "The record is created with status `pending_local_enrollment`."
         )
 
+        # Check if we need to clear the form from a previous successful save
+        if st.session_state.get("_clear_add_form"):
+            for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
+                st.session_state[k] = ""
+            st.session_state["_clear_add_form"] = False
+
         # Initialize session state for Add form
         for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
             if k not in st.session_state:
@@ -166,9 +172,8 @@ def render():
                     fetch=False,
                 )
                 st.success(f"✅ Employee **{name.strip()}** added. Visit the shop PC to enroll their fingerprint.")
-                # Clear form after success
-                for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
-                    st.session_state[k] = ""
+                # Set flag to clear form on next rerun before widgets render
+                st.session_state["_clear_add_form"] = True
                 st.rerun()
 
     # ── READ ──────────────────────────────────────────────────────────────────

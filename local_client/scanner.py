@@ -1,146 +1,100 @@
 """
-scanner.py — ctypes Bridge for Suprema BioStar 2 SDK  (BS_SDK_V2.dll)
-======================================================================
+scanner.py — ctypes Bridge for Suprema BioMini SDK (UFScanner.dll / UFMatcher.dll)
+==================================================================================
 Platform : Windows 64-bit (AMD64)
-DLL conv  : C calling convention (__cdecl) → use ctypes.CDLL
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW ctypes PASSES VARIABLES TO A C DLL — QUICK REFERENCE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. SCALAR TYPES
-   Define .argtypes = [ctypes.c_uint32, ...] so ctypes auto-converts
-   Python ints/floats to the right C type before the call.
-   Define .restype  = ctypes.c_int  so the return value is read correctly.
-
-2. OUTPUT POINTERS  (int*, void**)
-   Create a ctypes variable, then pass it with ctypes.byref():
-       device_id = ctypes.c_uint32(0)
-       sdk.BS2_SomeFunc(ctx, ctypes.byref(device_id))
-       result = device_id.value          # Python reads C-written value
-
-3. STRUCTS  (ctypes.Structure)
-   Mirror the C struct field-by-field with _fields_.  The order and types
-   MUST match the C header exactly (padding included).
-   Pass instances with ctypes.byref(my_struct).
-
-4. RAW BYTE BUFFERS  (uint8_t*)
-   ctypes.create_string_buffer(size) → mutable byte array.
-   Pass it directly; ctypes converts it to char*/void* automatically.
-   Read back with bytes(buf).
-
-5. DOUBLE POINTER ARRAYS  (uint32_t**)
-   Use ctypes.POINTER(ctypes.c_uint32)() and pass with byref().
-   Iterate with array[i] syntax up to the returned count.
-   Always call BS2_ReleaseObject() afterwards to avoid SDK memory leaks.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DLL conv  : __stdcall convention -> use ctypes.WinDLL
 """
 
 import ctypes
 import base64
 import logging
+import os
+import sys
+import time
 from typing import Optional, List, Tuple
-
-from config import (
-    BS2_DLL_PATH, LIBCRYPTO_DLL, LIBSSL_DLL,
-    TEMPLATE_FORMAT, SCAN_TIMEOUT_MS, ENROLL_SCAN_COUNT,
-    BS2_FINGER_TEMPLATE_SIZE, BS2_MAX_TEMPLATES_PER_FINGER,
-)
 
 logger = logging.getLogger(__name__)
 
-# ─── SDK Error / Status Codes ─────────────────────────────────────────────────
-BS_SDK_SUCCESS = 0
+# ─── BioMini SDK Error Codes & Constants ──────────────────────────────────────
+UFS_OK = 0
+UFS_PARAM_TIMEOUT = 201
+UFS_TEMPLATE_TYPE_SUPREMA = 2001
+MAX_TEMPLATE_SIZE = 1024
 
-BS2_ERROR_MESSAGES = {
-    0:      "Success",
-    -1:     "Unknown error",
-    -16:    "Device not found",
-    -17:    "Device not connected",
-    -32:    "Timeout — no finger detected",
-    -33:    "Fingerprint quality too low, try again",
-    -100:   "No matching fingerprint found",
-    -114:   "License error — check UFLicense.dat / SDK activation",
-}
+UFM_OK = 0
+UFM_TEMPLATE_TYPE_SUPREMA = 2001
 
-
-def _sdk_msg(code: int) -> str:
-    return BS2_ERROR_MESSAGES.get(code, f"SDK error code {code}")
-
-
-# ─── ctypes Struct: BS2Fingerprint ────────────────────────────────────────────
-# Mirrors bs2_data.h → BS2Fingerprint
-#   Total size = 1+1+2 + (384*2) = 772 bytes
-class BS2Fingerprint(ctypes.Structure):
+class BioMiniSDK:
     """
-    C definition (bs2_data.h):
-        typedef struct {
-            uint8_t templateCount;                    // 1 or 2 templates stored
-            uint8_t isEncrypted;                      // 1 = AES-encrypted
-            uint8_t reserved[2];                      // alignment padding
-            uint8_t data[BS2_FINGER_TEMPLATE_SIZE
-                         * BS2_MAX_TEMPLATES_PER_FINGER];
-        } BS2Fingerprint;
-    """
-    _fields_ = [
-        ("templateCount", ctypes.c_uint8),
-        ("isEncrypted",   ctypes.c_uint8),
-        ("reserved",      ctypes.c_uint8 * 2),
-        ("data",          ctypes.c_uint8 * (BS2_FINGER_TEMPLATE_SIZE
-                                            * BS2_MAX_TEMPLATES_PER_FINGER)),
-    ]
-
-
-# ─── SDK Loader ───────────────────────────────────────────────────────────────
-class BioStarSDK:
-    """
-    Thin wrapper around BS_SDK_V2.dll.
-
-    Usage:
-        with BioStarSDK() as sdk:
-            device_id = sdk.connect_first_device()
-            fp = sdk.scan_fingerprint(device_id)
-            template_b64 = sdk.fingerprint_to_b64(fp)
+    Python wrapper around Suprema BioMini SDK DLLs.
+    Exposes the same interface expected by main.py.
     """
 
     def __init__(self):
-        self._ctx    = ctypes.c_void_p(None)
-        self._lib    = None
-        self._device = None          # currently connected device ID
+        self._h_scanner = None
+        self._h_matcher = None
+        self._scanner_lib = None
+        self._matcher_lib = None
+        self._device_idx = None
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
     def open(self) -> None:
-        """Load DLL, allocate SDK context, and initialize."""
-        # Pre-load SSL dependencies so the main DLL finds them
-        ctypes.CDLL(LIBCRYPTO_DLL)
-        ctypes.CDLL(LIBSSL_DLL)
+        """Load DLLs, initialize scanner and matcher modules."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # Add base_dir to PATH so the DLL loader can find dependencies (like libeay32, ssleay32, NFIQ2)
+        os.environ["PATH"] = base_dir + os.path.pathsep + os.environ["PATH"]
 
-        self._lib = ctypes.CDLL(BS2_DLL_PATH)
-        logger.info("BS_SDK_V2.dll loaded successfully.")
+        scanner_dll = os.path.join(base_dir, "UFScanner.dll")
+        matcher_dll = os.path.join(base_dir, "UFMatcher.dll")
+
+        logger.info(f"Loading scanner DLL from: {scanner_dll}")
+        logger.info(f"Loading matcher DLL from: {matcher_dll}")
+
+        try:
+            # WinDLL uses the __stdcall calling convention on Windows
+            self._scanner_lib = ctypes.WinDLL(scanner_dll)
+            self._matcher_lib = ctypes.WinDLL(matcher_dll)
+        except Exception as e:
+            logger.error(f"Failed to load BioMini SDK DLLs: {e}")
+            raise RuntimeError(f"Failed to load BioMini SDK DLLs: {e}")
+
+        # Bind functions with explicit argtypes and restype
         self._bind_functions()
 
-        self._ctx = self._lib.BS2_AllocateContext()
-        if not self._ctx:
-            raise RuntimeError("BS2_AllocateContext failed (returned NULL).")
+        # Initialize Scanner Module
+        ret = self._scanner_lib.UFS_Init()
+        if ret != UFS_OK:
+            raise RuntimeError(f"UFS_Init failed with status code {ret}")
+        logger.info("UFScanner module initialized successfully.")
 
-        ret = self._lib.BS2_Initialize(self._ctx)
-        self._check(ret, "BS2_Initialize")
-        logger.info("SDK context initialized.")
+        # Create Matcher Instance
+        h_matcher = ctypes.c_void_p(None)
+        ret = self._matcher_lib.UFM_Create(ctypes.byref(h_matcher))
+        if ret != UFM_OK:
+            self._scanner_lib.UFS_Uninit()
+            raise RuntimeError(f"UFM_Create failed with status code {ret}")
+        self._h_matcher = h_matcher
+        logger.info("UFMatcher instance created successfully.")
+
+        # Set default matcher template type to SUPREMA
+        self._matcher_lib.UFM_SetTemplateType(self._h_matcher, UFM_TEMPLATE_TYPE_SUPREMA)
 
     def close(self) -> None:
-        """Disconnect device and release SDK context."""
-        if self._device and self._lib:
+        """Clean up matcher and scanner resources."""
+        if self._h_matcher and self._matcher_lib:
             try:
-                self._lib.BS2_DisconnectDevice(self._ctx, self._device)
-            except Exception:
-                pass
-            self._device = None
-        if self._lib and self._ctx:
+                self._matcher_lib.UFM_Delete(self._h_matcher)
+            except Exception as e:
+                logger.warning(f"Error deleting matcher: {e}")
+            self._h_matcher = None
+            logger.info("UFMatcher instance deleted.")
+
+        if self._scanner_lib:
             try:
-                self._lib.BS2_ReleaseContext(self._ctx)
-            except Exception:
-                pass
-        logger.info("SDK context released.")
+                self._scanner_lib.UFS_Uninit()
+            except Exception as e:
+                logger.warning(f"Error uninitializing scanner module: {e}")
+            self._scanner_lib = None
+            logger.info("UFScanner module uninitialized.")
 
     def __enter__(self):
         self.open()
@@ -149,199 +103,229 @@ class BioStarSDK:
     def __exit__(self, *_):
         self.close()
 
-    # ── Function Binding ──────────────────────────────────────────────────────
     def _bind_functions(self) -> None:
-        """
-        Bind every DLL function with explicit .argtypes and .restype.
-        This is MANDATORY on 64-bit Windows — without it ctypes cannot
-        correctly marshal arguments across the ABI boundary.
-        """
-        lib = self._lib
-        vp  = ctypes.c_void_p
-        u32 = ctypes.c_uint32
-        i32 = ctypes.c_int
+        """Set argument and return types for the SDK functions."""
+        # --- UFScanner.dll ---
+        self._scanner_lib.UFS_Init.argtypes = []
+        self._scanner_lib.UFS_Init.restype = ctypes.c_int
 
-        # Context management
-        lib.BS2_AllocateContext.argtypes = []
-        lib.BS2_AllocateContext.restype  = vp
+        self._scanner_lib.UFS_Uninit.argtypes = []
+        self._scanner_lib.UFS_Uninit.restype = ctypes.c_int
 
-        lib.BS2_Initialize.argtypes = [vp]
-        lib.BS2_Initialize.restype  = i32
+        self._scanner_lib.UFS_GetScannerNumber.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        self._scanner_lib.UFS_GetScannerNumber.restype = ctypes.c_int
 
-        lib.BS2_ReleaseContext.argtypes = [vp]
-        lib.BS2_ReleaseContext.restype  = None
+        self._scanner_lib.UFS_GetScannerHandle.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+        self._scanner_lib.UFS_GetScannerHandle.restype = ctypes.c_int
 
-        # Device discovery
-        lib.BS2_SearchDevices.argtypes = [vp]
-        lib.BS2_SearchDevices.restype  = i32
+        self._scanner_lib.UFS_GetScannerID.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self._scanner_lib.UFS_GetScannerID.restype = ctypes.c_int
 
-        lib.BS2_GetDevices.argtypes = [
-            vp,
-            ctypes.POINTER(ctypes.POINTER(u32)),   # uint32_t** deviceIds
-            ctypes.POINTER(u32),                   # uint32_t*  numDevices
+        self._scanner_lib.UFS_SetParameter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        self._scanner_lib.UFS_SetParameter.restype = ctypes.c_int
+
+        self._scanner_lib.UFS_ClearCaptureImageBuffer.argtypes = [ctypes.c_void_p]
+        self._scanner_lib.UFS_ClearCaptureImageBuffer.restype = ctypes.c_int
+
+        self._scanner_lib.UFS_IsFingerOn.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+        self._scanner_lib.UFS_IsFingerOn.restype = ctypes.c_int
+
+        self._scanner_lib.UFS_CaptureSingleImage.argtypes = [ctypes.c_void_p]
+        self._scanner_lib.UFS_CaptureSingleImage.restype = ctypes.c_int
+
+        self._scanner_lib.UFS_ExtractEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int)
         ]
-        lib.BS2_GetDevices.restype = i32
+        self._scanner_lib.UFS_ExtractEx.restype = ctypes.c_int
 
-        # Connection
-        lib.BS2_ConnectDevice.argtypes = [vp, u32]
-        lib.BS2_ConnectDevice.restype  = i32
+        self._scanner_lib.UFS_SetTemplateType.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._scanner_lib.UFS_SetTemplateType.restype = ctypes.c_int
 
-        lib.BS2_DisconnectDevice.argtypes = [vp, u32]
-        lib.BS2_DisconnectDevice.restype  = i32
+        self._scanner_lib.UFS_GetErrorString.argtypes = [ctypes.c_int, ctypes.c_char_p]
+        self._scanner_lib.UFS_GetErrorString.restype = ctypes.c_int
 
-        # Fingerprint scan
-        lib.BS2_ScanFingerprint.argtypes = [
-            vp,                                    # context
-            u32,                                   # deviceId
-            ctypes.POINTER(BS2Fingerprint),        # BS2Fingerprint* out
-            u32,                                   # templateFormat
-            u32,                                   # timeout (ms)
-            vp,                                    # BS2SimpleDeviceInfo* (NULL ok)
+        # --- UFMatcher.dll ---
+        self._matcher_lib.UFM_Create.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        self._matcher_lib.UFM_Create.restype = ctypes.c_int
+
+        self._matcher_lib.UFM_Delete.argtypes = [ctypes.c_void_p]
+        self._matcher_lib.UFM_Delete.restype = ctypes.c_int
+
+        self._matcher_lib.UFM_SetTemplateType.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._matcher_lib.UFM_SetTemplateType.restype = ctypes.c_int
+
+        self._matcher_lib.UFM_SetParameter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        self._matcher_lib.UFM_SetParameter.restype = ctypes.c_int
+
+        self._matcher_lib.UFM_Verify.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int)
         ]
-        lib.BS2_ScanFingerprint.restype = i32
+        self._matcher_lib.UFM_Verify.restype = ctypes.c_int
 
-        # 1:1 verification (used during 1:N identification loop)
-        lib.BS2_VerifyFingerprint.argtypes = [
-            vp,
-            u32,
-            ctypes.POINTER(BS2Fingerprint),        # stored template
-            ctypes.POINTER(BS2Fingerprint),        # live template
-        ]
-        lib.BS2_VerifyFingerprint.restype = i32
+        self._matcher_lib.UFM_GetErrorString.argtypes = [ctypes.c_int, ctypes.c_char_p]
+        self._matcher_lib.UFM_GetErrorString.restype = ctypes.c_int
 
-        # Memory release for SDK-allocated buffers
-        lib.BS2_ReleaseObject.argtypes = [vp]
-        lib.BS2_ReleaseObject.restype  = None
-
-    # ── Device Management ─────────────────────────────────────────────────────
     def search_and_connect(self) -> int:
         """
-        Discover all connected Suprema USB devices and connect to the first one.
-        Returns the device ID on success; raises RuntimeError on failure.
+        Check for connected BioMini scanners, connect to the first one.
+        Returns scanner index (0) or handle.
         """
-        ret = self._lib.BS2_SearchDevices(self._ctx)
-        self._check(ret, "BS2_SearchDevices")
+        count = ctypes.c_int(0)
+        ret = self._scanner_lib.UFS_GetScannerNumber(ctypes.byref(count))
+        self._check_scanner(ret, "UFS_GetScannerNumber")
 
-        # Retrieve the list of discovered device IDs
-        DevicePtrType = ctypes.POINTER(ctypes.c_uint32)
-        device_ids    = DevicePtrType()
-        num_devices   = ctypes.c_uint32(0)
+        if count.value == 0:
+            raise RuntimeError("No BioMini scanner found. Ensure the device is plugged in.")
 
-        ret = self._lib.BS2_GetDevices(
-            self._ctx,
-            ctypes.byref(device_ids),
-            ctypes.byref(num_devices),
+        h_scanner = ctypes.c_void_p(None)
+        ret = self._scanner_lib.UFS_GetScannerHandle(0, ctypes.byref(h_scanner))
+        self._check_scanner(ret, "UFS_GetScannerHandle")
+
+        self._h_scanner = h_scanner
+        self._device_idx = 0
+        logger.info("Connected to BioMini scanner.")
+
+        # Set Suprema template type for the scanner
+        self._scanner_lib.UFS_SetTemplateType(self._h_scanner, UFS_TEMPLATE_TYPE_SUPREMA)
+
+        # Set default timeout parameter (10 seconds)
+        timeout_val = ctypes.c_int(10000)
+        self._scanner_lib.UFS_SetParameter(self._h_scanner, UFS_PARAM_TIMEOUT, ctypes.byref(timeout_val))
+
+        return 0
+
+    def scan_fingerprint(self, device_id: Optional[int] = None) -> Tuple[bytes, int]:
+        """
+        Wait for a finger press, capture the image, extract the template.
+        Returns a tuple of (template_bytes, template_size).
+        """
+        if not self._h_scanner:
+            raise RuntimeError("No scanner connected. Call search_and_connect() first.")
+
+        logger.info("Clearing capture buffer and waiting for finger placement...")
+        self._scanner_lib.UFS_ClearCaptureImageBuffer(self._h_scanner)
+
+        # Blocks until finger is detected or timeout expires
+        ret = self._scanner_lib.UFS_CaptureSingleImage(self._h_scanner)
+        self._check_scanner(ret, "UFS_CaptureSingleImage")
+
+        # Extract fingerprint template
+        template_buf = (ctypes.c_ubyte * MAX_TEMPLATE_SIZE)()
+        template_size = ctypes.c_int(0)
+        quality = ctypes.c_int(0)
+
+        ret = self._scanner_lib.UFS_ExtractEx(
+            self._h_scanner,
+            MAX_TEMPLATE_SIZE,
+            template_buf,
+            ctypes.byref(template_size),
+            ctypes.byref(quality)
         )
-        self._check(ret, "BS2_GetDevices")
+        self._check_scanner(ret, "UFS_ExtractEx")
 
-        count = num_devices.value
-        if count == 0:
-            raise RuntimeError(
-                "No Suprema device found. Ensure the BioMini Slim 2 is plugged in."
-            )
+        logger.info(f"Scan completed. Size: {template_size.value}, Quality: {quality.value}")
 
-        first_id = device_ids[0]
-        logger.info(f"Found {count} device(s). Connecting to device ID={first_id}.")
+        if quality.value < 40:
+            raise RuntimeError("Fingerprint quality too low. Please place your finger flat and try again.")
 
-        # Release SDK-allocated device list memory
-        self._lib.BS2_ReleaseObject(device_ids)
-
-        ret = self._lib.BS2_ConnectDevice(self._ctx, first_id)
-        self._check(ret, "BS2_ConnectDevice")
-
-        self._device = first_id
-        logger.info(f"Connected to device {first_id}.")
-        return first_id
-
-    # ── Fingerprint Capture ───────────────────────────────────────────────────
-    def scan_fingerprint(self, device_id: Optional[int] = None) -> BS2Fingerprint:
-        """
-        Prompt the user to place their finger and return a BS2Fingerprint struct.
-        Raises RuntimeError on timeout or quality failure.
-        """
-        dev = device_id or self._device
-        if dev is None:
-            raise RuntimeError("No device connected. Call search_and_connect() first.")
-
-        fp  = BS2Fingerprint()
-        ret = self._lib.BS2_ScanFingerprint(
-            self._ctx,
-            ctypes.c_uint32(dev),
-            ctypes.byref(fp),
-            ctypes.c_uint32(TEMPLATE_FORMAT),
-            ctypes.c_uint32(SCAN_TIMEOUT_MS),
-            None,                                   # optional device info ptr
-        )
-        self._check(ret, "BS2_ScanFingerprint")
-        return fp
+        # Slice the buffer to the exact extracted size
+        raw_template = bytes(template_buf)[:template_size.value]
+        return raw_template, template_size.value
 
     def enroll_finger(self, device_id: Optional[int] = None) -> str:
         """
-        Run ENROLL_SCAN_COUNT scans and return a base64 string of the
-        last (highest quality) BS2Fingerprint struct for DB storage.
-        Each scan improves accuracy; only the final template is stored.
+        Performs 2 scans for reliable enrollment.
+        Returns the second (last) template serialized to a base64 string.
         """
-        dev = device_id or self._device
         templates = []
-        for i in range(ENROLL_SCAN_COUNT):
-            logger.info(f"Enrollment scan {i+1}/{ENROLL_SCAN_COUNT} — place finger …")
-            fp = self.scan_fingerprint(dev)
-            templates.append(fp)
-            logger.info(f"  Scan {i+1} OK  (templateCount={fp.templateCount})")
+        for i in range(2):
+            logger.info(f"Enrollment scan {i+1}/2 — place finger...")
+            template_bytes, size = self.scan_fingerprint(device_id)
+            templates.append(template_bytes)
+            
+            if i == 0:
+                logger.info("Please lift your finger...")
+                self._wait_for_finger_release()
 
-        # Use the last captured struct as the stored template
-        stored = templates[-1]
-        return self.fingerprint_to_b64(stored)
+        # Serialize the last captured template to base64
+        final_template = templates[-1]
+        return base64.b64encode(final_template).decode("utf-8")
 
-    # ── 1:N Identification ────────────────────────────────────────────────────
     def identify(
         self,
-        live_fp: BS2Fingerprint,
+        live_fp: Tuple[bytes, int],
         stored_templates: List[Tuple[int, str]],
         device_id: Optional[int] = None,
     ) -> Optional[int]:
         """
-        Compare *live_fp* against every stored template (1:N loop).
-        *stored_templates* is a list of (employee_id, base64_template_string).
-        Returns the matched employee_id, or None if no match found.
+        Compare live_fp (tuple of bytes and size) against all stored base64 templates.
+        Returns the matched employee ID, or None if no match.
         """
-        dev = device_id or self._device
-        if dev is None:
-            raise RuntimeError("No device connected.")
+        if not self._h_matcher:
+            raise RuntimeError("Matcher module not initialized.")
 
-        for emp_id, b64 in stored_templates:
-            stored_fp = self.b64_to_fingerprint(b64)
-            ret = self._lib.BS2_VerifyFingerprint(
-                self._ctx,
-                ctypes.c_uint32(dev),
-                ctypes.byref(stored_fp),
-                ctypes.byref(live_fp),
-            )
-            if ret == BS_SDK_SUCCESS:
-                logger.info(f"Match found → employee_id={emp_id}")
-                return emp_id
+        live_bytes, live_size = live_fp
 
-        logger.info("No matching fingerprint found in database.")
+        # Build ctypes buffer for live template
+        live_buf = (ctypes.c_ubyte * len(live_bytes)).from_buffer_copy(live_bytes)
+
+        for emp_id, b64_str in stored_templates:
+            if not b64_str:
+                continue
+            try:
+                stored_bytes = base64.b64decode(b64_str)
+                stored_size = len(stored_bytes)
+                stored_buf = (ctypes.c_ubyte * stored_size).from_buffer_copy(stored_bytes)
+
+                verify_succeed = ctypes.c_int(0)
+                ret = self._matcher_lib.UFM_Verify(
+                    self._h_matcher,
+                    live_buf,
+                    live_size,
+                    stored_buf,
+                    stored_size,
+                    ctypes.byref(verify_succeed)
+                )
+                if ret == UFM_OK and verify_succeed.value == 1:
+                    logger.info(f"Match found! Matched Employee ID: {emp_id}")
+                    return emp_id
+            except Exception as e:
+                logger.error(f"Error matching template for employee ID {emp_id}: {e}")
+
+        logger.info("No match found.")
         return None
 
-    # ── Template Serialization ────────────────────────────────────────────────
-    @staticmethod
-    def fingerprint_to_b64(fp: BS2Fingerprint) -> str:
-        """Serialize a BS2Fingerprint struct to a base64 string for DB storage."""
-        raw = bytes(fp)                  # ctypes struct → raw bytes
-        return base64.b64encode(raw).decode("utf-8")
+    def _wait_for_finger_release(self) -> None:
+        """Wait until the finger is lifted off the scanner sensor."""
+        if not self._h_scanner:
+            return
+        finger_on = ctypes.c_int(0)
+        # Check every 100ms for up to 5 seconds
+        for _ in range(50):
+            ret = self._scanner_lib.UFS_IsFingerOn(self._h_scanner, ctypes.byref(finger_on))
+            if ret != UFS_OK or finger_on.value == 0:
+                break
+            time.sleep(0.1)
 
-    @staticmethod
-    def b64_to_fingerprint(b64: str) -> BS2Fingerprint:
-        """Deserialize a base64 string from the DB back into a BS2Fingerprint struct."""
-        raw = base64.b64decode(b64)
-        fp  = BS2Fingerprint.from_buffer_copy(raw)
-        return fp
+    def _check_scanner(self, ret: int, fn_name: str) -> None:
+        """Raise RuntimeError if any SDK function fails."""
+        if ret != UFS_OK:
+            buf = ctypes.create_string_buffer(256)
+            try:
+                self._scanner_lib.UFS_GetErrorString(ret, buf)
+                err_msg = buf.value.decode("utf-8", errors="ignore")
+            except Exception:
+                err_msg = "Unknown error"
+            raise RuntimeError(f"[{fn_name}] failed with status code {ret}: {err_msg}")
 
-    # ── Internal Helpers ──────────────────────────────────────────────────────
-    @staticmethod
-    def _check(ret: int, fn_name: str) -> None:
-        """Raise RuntimeError if the SDK did not return BS_SDK_SUCCESS (0) or 1."""
-        if ret not in (0, 1):
-            msg = _sdk_msg(ret)
-            raise RuntimeError(f"[{fn_name}] failed — {msg}")
+# Alias to BioStarSDK to maintain transparent drop-in compatibility with main.py
+BioStarSDK = BioMiniSDK

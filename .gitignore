@@ -13,6 +13,8 @@ env/
 
 # ── Binaries (keep DLLs local, don't push to public repos) ───
 local_client/*.dll
+*.dll
+*.lib
 
 # ── VS Code ───────────────────────────────────────────────────
 .vscode/
