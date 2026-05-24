@@ -34,7 +34,7 @@ LATE_MAX_MINUTES     = 60
 HALF_DAY_MAX_MINUTES = 240
 
 # ─── Scanner / SDK ────────────────────────────────────────────────────────────
-SCAN_TIMEOUT_MS      = 10_000   # ms to wait for a finger press
+SCAN_TIMEOUT_MS      = 20_000   # ms to wait for a finger press (20 seconds)
 TEMPLATE_FORMAT      = 2        # BS2_TEMPLATE_FORMAT_SUPREMA = 2
 ENROLL_SCAN_COUNT    = 2        # capture 2 samples for reliable enrollment
 

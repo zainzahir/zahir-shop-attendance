@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Optional, List, Tuple
 
+from config import SCAN_TIMEOUT_MS
+
 logger = logging.getLogger(__name__)
 
 # ─── BioMini SDK Error Codes & Constants ──────────────────────────────────────
@@ -197,8 +199,8 @@ class BioMiniSDK:
         # Set Suprema template type for the scanner
         self._scanner_lib.UFS_SetTemplateType(self._h_scanner, UFS_TEMPLATE_TYPE_SUPREMA)
 
-        # Set default timeout parameter (10 seconds)
-        timeout_val = ctypes.c_int(10000)
+        # Set default timeout parameter from config (20 seconds)
+        timeout_val = ctypes.c_int(SCAN_TIMEOUT_MS)
         self._scanner_lib.UFS_SetParameter(self._h_scanner, UFS_PARAM_TIMEOUT, ctypes.byref(timeout_val))
 
         return 0
