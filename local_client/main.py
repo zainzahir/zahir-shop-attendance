@@ -430,7 +430,11 @@ class EnrollmentTab(ctk.CTkScrollableFrame):
     def _biometric_worker(self, emp_id: int, name: str):
         try:
             device_id    = self.sdk.search_and_connect()
-            template_b64 = self.sdk.enroll_finger(device_id)
+            
+            def gui_status_cb(text: str, color: str):
+                self.after(0, lambda: self._set_status(text, color))
+                
+            template_b64 = self.sdk.enroll_finger(device_id, status_callback=gui_status_cb)
             db.update_employee_fingerprint(emp_id, template_b64)
             self.after(0, self._on_enroll_success, emp_id, name)
         except Exception as exc:

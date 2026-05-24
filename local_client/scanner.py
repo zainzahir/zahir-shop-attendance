@@ -243,20 +243,25 @@ class BioMiniSDK:
         raw_template = bytes(template_buf)[:template_size.value]
         return raw_template, template_size.value
 
-    def enroll_finger(self, device_id: Optional[int] = None) -> str:
+    def enroll_finger(self, device_id: Optional[int] = None, status_callback = None) -> str:
         """
         Performs 2 scans for reliable enrollment.
         Returns the second (last) template serialized to a base64 string.
         """
         templates = []
         for i in range(2):
+            if status_callback:
+                status_callback(f"Place thumb flat on scanner (Scan {i+1} of 2) …", "#FFA500")
             logger.info(f"Enrollment scan {i+1}/2 — place finger...")
             template_bytes, size = self.scan_fingerprint(device_id)
             templates.append(template_bytes)
             
             if i == 0:
+                if status_callback:
+                    status_callback("Lift thumb off the scanner now!", "#2196F3")
                 logger.info("Please lift your finger...")
                 self._wait_for_finger_release()
+                time.sleep(1.0)  # Pause to let the user react and lift their finger
 
         # Serialize the last captured template to base64
         final_template = templates[-1]
