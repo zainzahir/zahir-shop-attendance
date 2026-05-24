@@ -89,6 +89,9 @@ def ensure_settings_tables():
     """
     conn = get_connection()
     with conn.cursor() as cur:
+        # Add joining_date to employees table if it doesn't exist
+        cur.execute("ALTER TABLE employees ADD COLUMN IF NOT EXISTS joining_date DATE NOT NULL DEFAULT CURRENT_DATE;")
+
         # ── shift_settings ────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS shift_settings (
@@ -365,17 +368,32 @@ def delete_relaxation_date(date: datetime.date):
 #  PAYROLL COMPUTATION ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
+def compute_monthly_payroll(
+    employee_id: int,
+    year: int,
+    month: int,
+    start_date: datetime.date = None,
+    end_date: datetime.date = None,
+) -> dict:
     """
-    Calculate the net salary for an employee for a given month.
+    Calculate the net salary for an employee for a given month with custom billing period.
 
     Returns a dict with:
-      - base_salary, working_days, present_days, late_days, half_day_days,
+      - base_salary, prorated_base_salary, billing_start, billing_end,
+        working_days, present_days, late_days, half_day_days,
         absent_days, waived_late, waived_half, billable_late, billable_half,
         billable_absent, late_deduction, half_day_deduction, absent_deduction,
         total_deductions, net_salary, relaxation_dates_applied, daily_breakdown
     """
-    # 1. Get salary settings for this employee
+    # 1. Get employee details including joining date
+    emp = run_query("SELECT joining_date FROM employees WHERE id = %s;", (employee_id,))
+    if not emp:
+        return {"error": "Employee not found."}
+    joining_date = emp[0]["joining_date"]
+    if isinstance(joining_date, str):
+        joining_date = datetime.datetime.strptime(joining_date, "%Y-%m-%d").date()
+
+    # Get salary settings for this employee
     sal = get_salary_settings(employee_id)
     if not sal:
         return {"error": "No salary settings configured for this employee."}
@@ -390,11 +408,28 @@ def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
     relax_dates = get_relaxation_dates(year, month)
     relax_date_map = {r["date"]: r for r in relax_dates}
 
-    # 4. Get attendance logs for this employee this month
+    # 4. Determine billing start and end dates
     _, last_day = calendar.monthrange(year, month)
-    start_date = datetime.date(year, month, 1)
-    end_date = datetime.date(year, month, last_day)
+    month_start = datetime.date(year, month, 1)
+    month_end = datetime.date(year, month, last_day)
 
+    billing_start = start_date if start_date else max(month_start, joining_date)
+    billing_end = end_date if end_date else month_end
+
+    if billing_start > billing_end:
+        return {"error": "Billing start date cannot be after billing end date."}
+
+    if joining_date > billing_end:
+        return {"error": f"Employee joined on {joining_date.strftime('%d %b %Y')}, which is after the billing period."}
+
+    # Calculate active days in the billing period relative to total calendar days in the month
+    active_days = (billing_end - billing_start).days + 1
+    active_days = max(0, min(active_days, last_day))
+    
+    # Calculate pro-rated base salary
+    prorated_base_salary = (Decimal(active_days) / Decimal(last_day)) * base_salary
+
+    # 5. Get attendance logs for this employee this month
     logs = run_query(
         """
         SELECT date, check_in_time, status
@@ -403,11 +438,11 @@ def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
           AND  date BETWEEN %s AND %s
         ORDER  BY date;
         """,
-        (employee_id, start_date, end_date),
+        (employee_id, month_start, month_end),
     )
     log_map = {r["date"]: dict(r) for r in logs} if logs else {}
 
-    # 5. Calculate working days (exclude relaxation full_day_off dates)
+    # 6. Calculate working days (exclude relaxation full_day_off dates)
     today = datetime.date.today()
     daily_breakdown = []
     present_days = 0
@@ -423,6 +458,17 @@ def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
         # Don't count future dates
         if d > today:
             break
+
+        # Check if the date is outside the billing cycle
+        if d < billing_start or d > billing_end:
+            status_str = "Before Billing Period" if d < billing_start else "After Billing Period"
+            if d < joining_date:
+                status_str = "Not Joined Yet"
+            daily_breakdown.append({
+                "date": d, "status": status_str,
+                "deduction": Decimal("0"), "note": "",
+            })
+            continue
 
         # Check if this date has a relaxation override
         relax_override = relax_date_map.get(d)
@@ -527,8 +573,7 @@ def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
     billable_absent = absent_days
 
     # 7. Calculate deductions
-    working_days_in_month = last_day  # use calendar days for simplicity
-    daily_salary = base_salary / Decimal(str(working_days_in_month)) if working_days_in_month > 0 else Decimal("0")
+    daily_salary = base_salary / Decimal(str(last_day)) if last_day > 0 else Decimal("0")
 
     late_ded_type = sal["late_deduction_type"]
     late_ded_val = Decimal(str(sal["late_deduction_value"]))
@@ -573,11 +618,14 @@ def compute_monthly_payroll(employee_id: int, year: int, month: int) -> dict:
             entry["deduction"] = day_ded
 
     total_deductions = late_deduction + absent_deduction
-    net_salary = max(base_salary - total_deductions, Decimal("0"))
+    net_salary = max(prorated_base_salary - total_deductions, Decimal("0"))
 
     return {
         "base_salary": float(base_salary),
-        "working_days": working_days_in_month,
+        "prorated_base_salary": float(prorated_base_salary),
+        "billing_start": billing_start,
+        "billing_end": billing_end,
+        "working_days": last_day,
         "daily_salary": float(daily_salary),
         "present_days": present_days,
         "late_days": late_days,

@@ -31,7 +31,7 @@ from db import (
 def _load_employees() -> pd.DataFrame:
     """Fetch all employees for dropdown selection."""
     rows = run_query(
-        "SELECT id, name, enrollment_status FROM employees ORDER BY name;"
+        "SELECT id, name, enrollment_status, joining_date FROM employees ORDER BY name;"
     )
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
@@ -566,8 +566,44 @@ def render():
                     key="pay_year_input",
                 )
 
+            # Get selected employee details to find joining date
+            emp_row = df_emp_pay[df_emp_pay["id"] == pay_emp_id].iloc[0]
+            joining_date = emp_row["joining_date"]
+            if isinstance(joining_date, str):
+                try:
+                    joining_date = datetime.date.fromisoformat(joining_date)
+                except ValueError:
+                    joining_date = datetime.date.today()
+            elif not isinstance(joining_date, datetime.date):
+                joining_date = datetime.date.today()
+
+            _, last_day = calendar.monthrange(pay_year, pay_month)
+            month_start = datetime.date(pay_year, pay_month, 1)
+            month_end = datetime.date(pay_year, pay_month, last_day)
+
+            default_start = max(month_start, joining_date)
+            default_end = month_end
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            dc_start, dc_end = st.columns(2)
+            with dc_start:
+                custom_start = st.date_input(
+                    "📅 Billing Cycle Start Date",
+                    value=default_start,
+                    key=f"billing_start_{pay_emp_id}_{pay_month}_{pay_year}",
+                )
+            with dc_end:
+                custom_end = st.date_input(
+                    "📅 Billing Cycle End Date",
+                    value=default_end,
+                    key=f"billing_end_{pay_emp_id}_{pay_month}_{pay_year}",
+                )
+
             if st.button("🧮 Calculate Payroll", type="primary", key="calc_payroll_btn"):
-                result = compute_monthly_payroll(pay_emp_id, pay_year, pay_month)
+                result = compute_monthly_payroll(
+                    pay_emp_id, pay_year, pay_month,
+                    start_date=custom_start, end_date=custom_end
+                )
 
                 if "error" in result:
                     st.error(f"⚠️ {result['error']}")
@@ -576,11 +612,25 @@ def render():
                     st.markdown("---")
                     st.markdown(
                         f"##### 💰 Payroll Summary — "
-                        f"{calendar.month_name[pay_month]} {pay_year}"
+                        f"{custom_start.strftime('%d %b')} to {custom_end.strftime('%d %b %Y')}"
                     )
 
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("💵 Base Salary", _format_currency(result["base_salary"]))
+                    
+                    is_prorated = result["prorated_base_salary"] != result["base_salary"]
+                    if is_prorated:
+                        m1.metric(
+                            "💵 Prorated Base",
+                            _format_currency(result["prorated_base_salary"]),
+                            delta=f"Full: {_format_currency(result['base_salary'])}",
+                            delta_color="off",
+                        )
+                    else:
+                        m1.metric(
+                            "💵 Base Salary",
+                            _format_currency(result["base_salary"]),
+                        )
+                        
                     m2.metric(
                         "📉 Total Deductions",
                         _format_currency(result["total_deductions"]),
@@ -663,6 +713,7 @@ def render():
                         )
 
                     # ── Final Net Salary Box ──────────────────────────
+                    base_display = result["prorated_base_salary"] if is_prorated else result["base_salary"]
                     st.markdown(
                         f"""
                         <div style="
@@ -680,7 +731,7 @@ def render():
                                 {_format_currency(result['net_salary'])}
                             </h1>
                             <p style="color: #a5d6a7; margin: 8px 0 0; font-size: 0.9rem;">
-                                Base {_format_currency(result['base_salary'])}
+                                Base {_format_currency(base_display)}
                                 — Deductions {_format_currency(result['total_deductions'])}
                             </p>
                         </div>

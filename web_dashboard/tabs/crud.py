@@ -98,7 +98,7 @@ def _on_phone_change(key: str):
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def _reload_employees(search: str = "") -> pd.DataFrame:
     sql = """
-        SELECT id, name, cnic, phone, address, enrollment_status, created_at::TEXT
+        SELECT id, name, cnic, phone, address, enrollment_status, joining_date::TEXT
         FROM   employees
         WHERE  name ILIKE %s OR cnic ILIKE %s OR phone ILIKE %s
         ORDER  BY id DESC;
@@ -126,12 +126,15 @@ def render():
         if st.session_state.get("_clear_add_form"):
             for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
                 st.session_state[k] = ""
+            st.session_state["add_joining_date"] = datetime.date.today()
             st.session_state["_clear_add_form"] = False
 
         # Initialize session state for Add form
         for k in ["add_name", "add_cnic", "add_phone", "add_address"]:
             if k not in st.session_state:
                 st.session_state[k] = ""
+        if "add_joining_date" not in st.session_state:
+            st.session_state["add_joining_date"] = datetime.date.today()
 
         name = st.text_input(
             "Full Name *", key="add_name",
@@ -152,6 +155,12 @@ def render():
             "Address *", key="add_address",
             height=80, help="Street, area, city",
         )
+        import datetime as dt_mod
+        joining_date = st.date_input(
+            "Joining Date *",
+            value=st.session_state["add_joining_date"],
+            key="add_joining_date",
+        )
 
         if st.button("💾 Save Employee", type="primary", key="add_btn"):
             errors = _run_all_validations(name, cnic, phone, address)
@@ -163,12 +172,12 @@ def render():
                 clean_phone = re.sub(r"\D", "", phone.strip())
                 run_query(
                     """
-                    INSERT INTO employees (name, cnic, phone, address,
+                    INSERT INTO employees (name, cnic, phone, address, joining_date,
                                           enrollment_status)
-                    VALUES (%s, %s, %s, %s, 'pending_local_enrollment');
+                    VALUES (%s, %s, %s, %s, %s, 'pending_local_enrollment');
                     """,
                     (name.strip(), formatted_cnic,
-                     clean_phone, address.strip()),
+                     clean_phone, address.strip(), joining_date),
                     fetch=False,
                 )
                 st.success(f"✅ Employee **{name.strip()}** added. Visit the shop PC to enroll their fingerprint.")
@@ -190,7 +199,7 @@ def render():
                 df.rename(columns={
                     "id": "ID", "name": "Name", "cnic": "CNIC",
                     "phone": "Phone", "address": "Address",
-                    "enrollment_status": "Status", "created_at": "Joined"
+                    "enrollment_status": "Status", "joining_date": "Joined"
                 }),
                 use_container_width=True,
                 hide_index=True,
@@ -222,6 +231,20 @@ def render():
                 st.session_state["edit_cnic"]    = emp_row["cnic"] or ""
                 st.session_state["edit_phone"]   = emp_row["phone"] or ""
                 st.session_state["edit_address"] = emp_row["address"] or ""
+                
+                # Load joining_date
+                raw_join = emp_row.get("joining_date")
+                import datetime as dt_mod
+                if isinstance(raw_join, str):
+                    try:
+                        st.session_state["edit_joining_date"] = dt_mod.date.fromisoformat(raw_join)
+                    except ValueError:
+                        st.session_state["edit_joining_date"] = dt_mod.date.today()
+                elif isinstance(raw_join, dt_mod.date):
+                    st.session_state["edit_joining_date"] = raw_join
+                else:
+                    st.session_state["edit_joining_date"] = dt_mod.date.today()
+                    
                 st.session_state["_edit_loaded"] = edit_key
 
             new_name = st.text_input(
@@ -239,6 +262,9 @@ def render():
             new_address = st.text_area(
                 "Address *", key="edit_address", height=80,
             )
+            new_joining_date = st.date_input(
+                "Joining Date *", key="edit_joining_date"
+            )
 
             if st.button("💾 Update Record", type="primary", key="edit_btn"):
                 errors = _run_all_validations(new_name, new_cnic, new_phone, new_address)
@@ -251,15 +277,16 @@ def render():
                     run_query(
                         """
                         UPDATE employees
-                        SET    name    = %s,
-                               cnic    = %s,
-                               phone   = %s,
-                               address = %s
+                        SET    name         = %s,
+                               cnic         = %s,
+                               phone        = %s,
+                               address      = %s,
+                               joining_date = %s
                         WHERE  id = %s;
                         """,
                         (new_name.strip(), formatted_cnic,
                          clean_phone, new_address.strip(),
-                         emp_id),
+                         new_joining_date, emp_id),
                         fetch=False,
                     )
                     st.success(f"✅ Employee #{emp_id} updated successfully.")
