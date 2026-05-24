@@ -35,15 +35,14 @@ def render():
     enrolled_count = int(total_enrolled[0]["n"]) if total_enrolled else 0
     
     # Absent count is based on enrolled_count (since pending users can't check in anyway)
-    absent = enrolled_count - sum(counts.get(s, 0) for s in ["Present", "Late", "Half Day"])
+    absent = enrolled_count - sum(counts.get(s, 0) for s in ["Present", "Late"])
     counts.setdefault("Absent", absent)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("👥 Total Employees", total_all_count, delta=f"{enrolled_count} With Fingerprint", delta_color="off")
     col2.metric("✅ Present",  counts.get("Present",  0))
     col3.metric("⏰ Late",     counts.get("Late",     0))
-    col4.metric("🌓 Half Day", counts.get("Half Day", 0))
-    col5.metric("❌ Absent",   counts.get("Absent",   0))
+    col4.metric("❌ Absent",   counts.get("Absent",   0))
 
     st.divider()
 
@@ -118,7 +117,7 @@ def render():
     st.markdown("#### Today's Individual Records")
     detail = run_query(
         """
-        SELECT employee_name, check_in_time::TEXT, status
+        SELECT employee_name, TO_CHAR(check_in_time, 'HH12:MI am') AS check_in_time, status
         FROM   today_summary
         ORDER  BY status, employee_name;
         """

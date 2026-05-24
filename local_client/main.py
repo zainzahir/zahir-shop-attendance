@@ -24,7 +24,7 @@ import db
 from config import (
     APP_TITLE, CTK_THEME,
     SHIFT_START,
-    PRESENT_MAX_MINUTES, LATE_MAX_MINUTES, HALF_DAY_MAX_MINUTES,
+    PRESENT_MAX_MINUTES, LATE_MAX_MINUTES,
 )
 from scanner import BioStarSDK
 from validators import validate_name, validate_cnic, validate_phone, validate_address
@@ -45,7 +45,7 @@ ctk.set_default_color_theme(CTK_THEME)
 def compute_status(check_in: datetime.time) -> str:
     """
     Compare *check_in* against the SHIFT_START constant and return one of:
-    'Present' | 'Late' | 'Half Day'
+    'Present' | 'Late'
     """
     today     = datetime.date.today()
     dt_checkin = datetime.datetime.combine(today, check_in)
@@ -54,10 +54,8 @@ def compute_status(check_in: datetime.time) -> str:
 
     if delta_min <= PRESENT_MAX_MINUTES:
         return "Present"
-    elif delta_min <= LATE_MAX_MINUTES:
-        return "Late"
     else:
-        return "Half Day"
+        return "Late"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

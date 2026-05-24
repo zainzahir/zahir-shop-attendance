@@ -9,6 +9,13 @@ Secrets (Streamlit Cloud) — add ALL of these in App Settings → Secrets:
     DASHBOARD_PASSWORD = "your_chosen_password"
 """
 
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import streamlit as st
 
 st.set_page_config(
@@ -145,9 +152,17 @@ if st.button("🚪 Logout", key="logout_btn"):
     st.rerun()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-from tabs import analytics, crud
+from tabs import analytics, crud, management
+from db import ensure_settings_tables
 
-tab_analytics, tab_crud = st.tabs(["📊  Analytics Dashboard", "👥  Employee Management"])
+# Auto-create management/payroll tables on first load
+ensure_settings_tables()
+
+tab_analytics, tab_crud, tab_mgmt = st.tabs([
+    "📊  Analytics Dashboard",
+    "👥  Employee Management",
+    "⚙️  Management & Payroll",
+])
 
 with tab_analytics:
     analytics.render()
@@ -155,3 +170,5 @@ with tab_analytics:
 with tab_crud:
     crud.render()
 
+with tab_mgmt:
+    management.render()

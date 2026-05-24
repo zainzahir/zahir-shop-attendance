@@ -26,12 +26,9 @@ SHIFT_START = datetime.time(7, 30)   # 07:30 AM
 #  Minutes late  │  Status
 #  ─────────────────────────
 #   0  –  15     │  Present
-#  16  –  60     │  Late
-#  61  – 240     │  Half Day
-#  > 240         │  (Absent — not scanned, admin logs manually)
+#  > 15          │  Late
 PRESENT_MAX_MINUTES  = 15
 LATE_MAX_MINUTES     = 60
-HALF_DAY_MAX_MINUTES = 240
 
 # ─── Scanner / SDK ────────────────────────────────────────────────────────────
 SCAN_TIMEOUT_MS      = 20_000   # ms to wait for a finger press (20 seconds)
